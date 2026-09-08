@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Added PPE documentation ([#82](https://github.com/praxis-proxy/policy/pull/82))
 
+### Internal
+
+- **Line coverage floor raised to 96%.** `COVERAGE_FLOOR` in the `Makefile` is the gate. Parser error-return sites, `load_config_yaml` visitor refusals (`visit_route` / `visit_complete`), and the Valkey empty-append path are now tested. About 25 unreachable defensive guards still cap the number below 100. ([#14](https://github.com/praxis-proxy/policy/issues/14))
+
 ## [0.2.0] - 2026-09-03
 
 > **Upgrading from 0.1.0?** Configurations require changes: this release removes ten keys, changes the default dispatch mode, and tightens APL lexical rules. `docs/upgrade-apl.md` lists the required rewrites with before-and-after examples.

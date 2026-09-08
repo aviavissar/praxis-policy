@@ -183,7 +183,7 @@ audit:
 #
 # The coverage workflow calls this target rather than repeating the threshold, so
 # this is the only copy of the number.
-COVERAGE_FLOOR ?= 95
+COVERAGE_FLOOR ?= 96
 
 # `--all-features` reaches the test targets behind `test-util`, without which the
 # compiler's test scaffolding and everything it covers fall outside the floor.
