@@ -8086,6 +8086,23 @@ groups:
                 }
                 Ok(())
             }
+            fn visit_route(
+                &self,
+                _mgr: &Arc<PolicyEngine>,
+                _yaml: &serde_yaml::Value,
+                _parsed: &crate::config::RouteEntry,
+            ) -> Result<(), VisitorError> {
+                if self.0 == "route" {
+                    return Err("no".into());
+                }
+                Ok(())
+            }
+            fn visit_complete(&self, _mgr: &Arc<PolicyEngine>) -> Result<(), VisitorError> {
+                if self.0 == "complete" {
+                    return Err("no".into());
+                }
+                Ok(())
+            }
         }
 
         let yaml = r#"
@@ -8102,6 +8119,11 @@ groups:
     authorization:
       pre_invocation:
         - "require(authenticated)"
+routes:
+  - tool: some_tool
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
 "#;
         // One section per run, so a failure in an earlier section cannot mask a
         // missing error arm in a later one.
@@ -8110,6 +8132,8 @@ groups:
             ("global", "visit_global"),
             ("default", "visit_default"),
             ("bundle", "visit_policy_bundle"),
+            ("route", "visit_route"),
+            ("complete", "visit_complete"),
         ] {
             let mgr = Arc::new(PolicyEngine::default());
             mgr.register_visitor(Arc::new(Refuser(section)));
@@ -8125,6 +8149,33 @@ groups:
                 "and the section it refused; expected {expect} in: {msg}"
             );
         }
+    }
+
+    /// Garbage YAML must fail as a parse error, not as a visitor or
+    /// deserialize problem. Operators paste documents; a lex failure is the
+    /// first thing they need named.
+    #[test]
+    fn load_config_yaml_rejects_unlexable_yaml() {
+        let mgr = Arc::new(PolicyEngine::default());
+        let err = load_fixture_yaml(&mgr, "{{").expect_err("unlexable YAML must not load");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("YAML parse error"),
+            "the load must name a YAML parse failure: {msg}"
+        );
+    }
+
+    /// A document that is valid YAML but not a policy document must fail as a
+    /// deserialize error, not as a YAML lex failure.
+    #[test]
+    fn load_config_yaml_rejects_a_document_that_is_not_a_policy() {
+        let mgr = Arc::new(PolicyEngine::default());
+        let err = load_fixture_yaml(&mgr, "[]").expect_err("a sequence is not a policy document");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("PolicyConfig deserialize error"),
+            "the load must name a deserialize failure: {msg}"
+        );
     }
 
     // =====================================================================
