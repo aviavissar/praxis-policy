@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ### Internal
 
 - **Line coverage floor raised to 96%.** `COVERAGE_FLOOR` in the `Makefile` is the gate. Parser error-return sites, `load_config_yaml` visitor refusals (`visit_route` / `visit_complete`), and the Valkey empty-append path are now tested. About 25 unreachable defensive guards still cap the number below 100. ([#14](https://github.com/praxis-proxy/policy/issues/14))
+- **The coverage artifact now measures the gated run.** The coverage job built `lcov.info` from a second, narrower run (default features, ignored tests skipped), so the uploaded report understated the number the floor asserted. `make coverage-lcov` measures once and derives both the floor check and the report from that data. ([#86](https://github.com/praxis-proxy/policy/pull/86))
 
 ## [0.2.0] - 2026-09-03
 

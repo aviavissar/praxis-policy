@@ -24,6 +24,7 @@ make lint           # fmt --check + clippy -D warnings
 make lint-extra     # typos + taplo fmt --check
 make audit          # cargo deny check
 make coverage       # line coverage gated at 96%
+make coverage-lcov  # same gate, plus an lcov.info artifact
 make doc            # rustdoc with -D warnings
 make ci             # lint + test (what CI runs)
 make setup-hooks    # install pre-commit hook
