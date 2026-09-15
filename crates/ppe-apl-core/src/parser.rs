@@ -2457,35 +2457,31 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
         Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
+        // `restrict:` in effect position is consumed by `parse_effect_value`
+        // before `parse_step` runs, so this arm only keeps the match
+        // exhaustive.
         Step::Restrict { spec } => Ok(Effect::Restrict { spec }),
         Step::Rule(rule) => {
-            // Nested when/do inside a do: list isn't supported
-            // — only control effects (allow/deny) flatten cleanly.
-            if !matches!(rule.condition, Expression::Always) {
+            // A rule does not flatten into an effect list. A conditional one
+            // carries a guard the list cannot express, and an unconditional one
+            // never arrives: `parse_predicate` needs at least one atom, so it
+            // never yields `Always`, and the spellings that do build an
+            // `Always` rule (bare `allow`/`deny`, `sequential:`, `parallel:`)
+            // are all consumed upstream. Both are refused rather than guessed.
+            if matches!(rule.condition, Expression::Always) {
                 return Err(ParseError::Rule {
                     rule: source.to_owned(),
-                    msg: "conditional rules nested inside `do:` are not supported \
-                          (use a sibling `when:`/`do:` rule instead)"
+                    msg: "unconditional rule inside `do:` is not supported (use the \
+                          effect on its own)"
                         .into(),
                 });
             }
-            if rule.effects.len() != 1 {
-                return Err(ParseError::Rule {
-                    rule: source.to_owned(),
-                    msg: format!(
-                        "unconditional rule inside `do:` must produce exactly one \
-                         effect, got {}",
-                        rule.effects.len()
-                    ),
-                });
-            }
-            rule.effects
-                .into_iter()
-                .next()
-                .ok_or_else(|| ParseError::Rule {
-                    rule: source.to_owned(),
-                    msg: "unconditional rule inside `do:` produced no effect".into(),
-                })
+            Err(ParseError::Rule {
+                rule: source.to_owned(),
+                msg: "conditional rules nested inside `do:` are not supported \
+                      (use a sibling `when:`/`do:` rule instead)"
+                    .into(),
+            })
         },
         Step::Pdp { .. } => Err(ParseError::Rule {
             rule: source.to_owned(),
@@ -6193,6 +6189,15 @@ do:
 "#;
         let err = parse_step_yaml(yaml).expect_err("nested when/do");
         assert_rejected(err, "conditional rules nested inside `do:`");
+    }
+
+    /// `delegate.plugin` names a registered plugin, so a non-string value is
+    /// an author error rather than something to stringify and look up.
+    #[test]
+    fn delegate_plugin_must_be_a_string() {
+        let err = parse_step_yaml("when: authenticated\ndo:\n  delegate:\n    plugin: 42")
+            .expect_err("numeric plugin name");
+        assert_rejected(err, "`delegate.plugin` must be a string");
     }
 
     #[test]

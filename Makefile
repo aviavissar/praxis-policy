@@ -198,9 +198,14 @@ COVERAGE_FLOOR ?= 96
 COVERAGE_ARGS := --workspace --all-features
 COVERAGE_TEST_ARGS := -- --include-ignored
 
+# `clean` first: llvm-cov merges the mappings of every instrumented binary it
+# finds, so a stale one from a run with different features (or a cached target
+# dir in CI) is counted a second time, inflating both the line count and the
+# miss count.
 .PHONY: coverage
 coverage:
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || $(CARGO) install cargo-llvm-cov --locked
+	@cargo llvm-cov clean --workspace
 	@VALKEY_TESTS_OPTIONAL=1 cargo llvm-cov $(COVERAGE_ARGS) --summary-only \
 		--fail-under-lines $(COVERAGE_FLOOR) $(COVERAGE_TEST_ARGS)
 
@@ -212,6 +217,7 @@ coverage:
 .PHONY: coverage-lcov
 coverage-lcov:
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || $(CARGO) install cargo-llvm-cov --locked
+	@cargo llvm-cov clean --workspace
 	@VALKEY_TESTS_OPTIONAL=1 cargo llvm-cov $(COVERAGE_ARGS) --no-report $(COVERAGE_TEST_ARGS)
 	@cargo llvm-cov report --lcov --output-path lcov.info
 	@cargo llvm-cov report --summary-only --fail-under-lines $(COVERAGE_FLOOR)
