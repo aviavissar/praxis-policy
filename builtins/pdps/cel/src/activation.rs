@@ -16,16 +16,8 @@
 //   String    → Value::String
 //   StringSet → Value::List(of String)   (so `"x" in session.labels` works)
 //
-// Collision rule: the same name cannot be both a single value and a
-// map. If the bag has `delegation` and `delegation.depth`, we keep
-// the map, drop the single value, and log a warning.
-//
-// That case is real. CMF copies each role name into `role.<name> =
-// true` (and the same for permissions and teams) without stripping
-// dots. A subject with roles `admin` and `admin.readonly` therefore
-// gets both `role.admin` and `role.admin.readonly`, and
-// `role.admin == true` evaluates false. We pick a winner rather than
-// panic, because anyone can put any key in the bag.
+// If a key is both a leaf and a namespace prefix, the namespace wins
+// and the scalar is dropped with a warning.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -237,9 +229,6 @@ mod tests {
         matches!(run_cel(expr, &ctx), Ok(Value::Bool(true)))
     }
 
-    /// Same split `build_tree` uses, so the test cannot drift from
-    /// production by hand-writing a segments slice that disagrees with
-    /// the dotted key.
     fn insert_key(root: &mut BTreeMap<String, Node>, key: &str, leaf: Value) {
         let segments: Vec<&str> = key.split('.').collect();
         insert(root, key, &segments, leaf);
@@ -395,12 +384,6 @@ mod tests {
         assert!(truthy("delegation.depth == 3", &bag));
     }
 
-    /// The sibling of `namespace_wins_on_leaf_collision`: a scalar
-    /// arrives *after* the namespace already exists. `insert` keeps the
-    /// branch and drops the scalar (the warning at the terminal-segment
-    /// arm). Driven through `insert` directly because `AttributeBag` is
-    /// a `HashMap` — `set` order is not `iter` order, so a bag cannot
-    /// pin this arm.
     #[test]
     fn namespace_wins_when_scalar_arrives_after_branch() {
         let mut root = BTreeMap::new();
@@ -420,15 +403,10 @@ mod tests {
                         Some(Node::Leaf(Value::Int(3)))
                     )
             ),
-            "namespace must win when a scalar arrives after the branch exists; \
-             depth must stay Int(3), not the colliding string",
+            "namespace must retain its child",
         );
     }
 
-    /// Mirror of `namespace_wins_when_scalar_arrives_after_branch`:
-    /// `delegation` first, then `delegation.depth`. `insert` turns the
-    /// single value into a map and keeps `depth`. Direct `insert`
-    /// so a `HashMap` cannot skip this path.
     #[test]
     fn namespace_wins_when_branch_arrives_after_scalar() {
         let mut root = BTreeMap::new();
@@ -448,7 +426,7 @@ mod tests {
                         Some(Node::Leaf(Value::Int(3)))
                     )
             ),
-            "a later dotted key must promote the scalar to a map and keep depth as Int(3)",
+            "namespace must replace the scalar",
         );
     }
 }
