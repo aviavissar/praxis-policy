@@ -66,7 +66,7 @@ default-members = [
 version = "0.3.0"
 edition = "2024"
 # MSRV. Keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
-rust-version = "1.96"
+rust-version = "1.92"
 license = "Apache-2.0"
 authors = ["Teryl Taylor", "Fred Araujo"]
 repository = "https://github.com/praxis-proxy/policy"
