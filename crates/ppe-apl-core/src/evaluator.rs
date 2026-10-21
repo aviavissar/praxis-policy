@@ -13,11 +13,8 @@
 //
 // Order comparison on a *present* value that is not a finite number is
 // not a boolean. `false` skips a deny rule; `true` inverts under `!`.
-// The phase Denies instead, with a reason that says fail-closed.
-// Inside `&` and `|` a definite sibling still settles the expression:
-// one `false` makes `&` false, one `true` makes `|` true, and the
-// unorderable operand is ignored. The phase Denies for unorderable
-// only when no operand settles.
+// A definite sibling can settle `&` or `|` without coercing the comparison.
+// Otherwise the phase Denies with a fail-closed reason.
 // The host drives the four phases separately by calling `evaluate_rules` once
 // per declared phase — phase orchestration lives in `praxis-policy-apl-runtime`.
 //
@@ -113,10 +110,6 @@ fn eval_expression(expr: &Expression, bag: &AttributeBag) -> Result<bool, Unorde
     }
 }
 
-/// Conjunction. `false` from any operand is the result, including when
-/// another operand cannot be ordered. `Unorderable` is returned only when
-/// every operand is true or unorderable and at least one is unorderable.
-/// The reported failure is the leftmost, so a given expression names one key.
 fn eval_and(parts: &[Expression], bag: &AttributeBag) -> Result<bool, Unorderable> {
     let mut pending = None;
     for e in parts {
@@ -136,10 +129,6 @@ fn eval_and(parts: &[Expression], bag: &AttributeBag) -> Result<bool, Unorderabl
     }
 }
 
-/// Disjunction. `true` from any operand is the result, including when
-/// another operand cannot be ordered. `Unorderable` is returned only when
-/// every operand is false or unorderable and at least one is unorderable.
-/// The reported failure is the leftmost, so a given expression names one key.
 fn eval_or(parts: &[Expression], bag: &AttributeBag) -> Result<bool, Unorderable> {
     let mut pending = None;
     for e in parts {
@@ -2466,10 +2455,6 @@ mod tests {
 
     #[test]
     fn and_or_ignore_unorderable_when_a_sibling_settles() {
-        // `args.amount = "lots"` cannot be ordered. A false `&` operand or a
-        // true `|` operand decides the expression either way around, so the
-        // phase does not deny just because the unorderable operand came first.
-        // When nothing settles, both orders still deny fail-closed.
         let mut bag = AttributeBag::new();
         bag.set("args.amount", "lots");
         bag.set("subject.role", "admin");
@@ -2480,7 +2465,11 @@ mod tests {
         };
 
         let allow = |src: &str| {
-            assert_eq!(decide(src), Decision::Allow, "{src}");
+            assert_eq!(
+                decide(src),
+                Decision::Allow,
+                "settled predicate should allow: {src}"
+            );
         };
         let rule_fired = |src: &str| {
             assert_eq!(
@@ -2489,7 +2478,7 @@ mod tests {
                     reason: Some("blocked".into()),
                     rule_source: "test".into(),
                 },
-                "{src}"
+                "true predicate should fire the deny rule: {src}"
             );
         };
         let still_unorderable = |src: &str| match decide(src) {
@@ -2498,9 +2487,15 @@ mod tests {
                 rule_source,
             } => {
                 let reason = reason.expect("fail-closed deny carries a reason");
-                assert!(reason.contains("fail-closed"), "{src}: {reason}");
-                assert!(reason.contains("args.amount"), "{src}: {reason}");
-                assert_eq!(rule_source, "test", "{src}");
+                assert!(
+                    reason.contains("fail-closed"),
+                    "unsettled predicate: {src}: {reason}"
+                );
+                assert!(
+                    reason.contains("args.amount"),
+                    "unorderable key: {src}: {reason}"
+                );
+                assert_eq!(rule_source, "test", "unsettled predicate source: {src}");
             },
             other => panic!("{src}: expected an unorderable deny, got {other:?}"),
         };
@@ -2515,18 +2510,11 @@ mod tests {
         still_unorderable(r#"args.amount > 10000 & subject.role == "admin": deny("blocked")"#);
         still_unorderable(r#"subject.role == "admin" & args.amount > 10000: deny("blocked")"#);
 
-        // `require(p)` denies on `!p`, so a settled operand decides it too.
-        // A pipe is a disjunction before that negation: one true side makes
-        // the requirement hold, and both orders Allow. `!(...)` is the same
-        // shape written out.
         allow(r#"require(args.amount <= 10000 | subject.role == "admin")"#);
         allow(r#"require(subject.role == "admin" | args.amount <= 10000)"#);
         allow(r#"!(args.amount > 10000 | subject.role == "admin"): deny("blocked")"#);
         rule_fired(r#"!(args.amount > 10000 & subject.role == "guest"): deny("blocked")"#);
 
-        // The comma is conjunction, and De Morgan folds `require(a, b)` into
-        // `!a | !b`. One requirement being true does not settle that
-        // disjunction, so both orders stay fail-closed.
         still_unorderable(r#"require(args.amount <= 10000, subject.role == "admin")"#);
         still_unorderable(r#"require(subject.role == "admin", args.amount <= 10000)"#);
     }
