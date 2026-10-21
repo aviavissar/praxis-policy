@@ -128,16 +128,16 @@ routes:
     match:
       - kind: thinking
         result:
-          "": "scan(injection)"
+          "": "injection.scan"
 
       - kind: text
         result:
-          "": "str | redact(pii)"
+          "": "str | pii.redact"
 
       - kind: tool_call
         name: "get_compensation"
         args:
-          employee_id: "str | type(uuid)"
+          employee_id: "str | uuid"
           salary: "redact"
 ```
 
@@ -151,14 +151,16 @@ What lives at each level:
 | `delegate()` | Route | Mints one credential per request, not per-part. |
 | `restrict()` | Route | Backend constraint applies to the whole request. |
 | `redact` / `mask` / `omit` / `hash` | Match | Per-field, per-part — no cross-part dependency. |
-| `scan(injection)` | Match | Scans one part at a time. |
-| `type(uuid)` / `length(...)` | Match | Validates one field in one part. |
+| `injection.scan` | Match | Scans one part at a time. |
+| `uuid` / `len(...)` | Match | Validates one field in one part. |
 
 ### Execution order
 
 The existing code already splits evaluation into two phases:
 `evaluate_pre` (args + pre_invocation) and `evaluate_post`
 (result + post_invocation). Match entries follow the same split.
+How an `args:` rule should address a tool call produced in an LLM
+output remains an open question below.
 
 **Pre-invocation (inside `evaluate_pre`):**
 
@@ -233,13 +235,13 @@ Example: Claude decides to call `get_compensation`.
 <!-- validate: fragment -->
 ```yaml
 routes:
-  # Tool route — fires first, at tool invocation time
+  # Tool route — fires when the generated call is invoked
   - tool: "get_compensation"
     authorization:
       pre_invocation:
         - jwt-token
 
-  # LLM route — fires later, when the LLM response arrives
+  # LLM route — sees the generated call in the LLM output
   - llm: "claude-*"
     match:
       - kind: tool_call
@@ -248,13 +250,10 @@ routes:
           salary: "redact"
 ```
 
-The **tool route** fires first — it decides whether the tool is
-allowed to run at all. If denied, everything stops here.
-
-The **LLM route** fires later — after the tool runs and Claude
-produces a response. It inspects what Claude *said* and modifies
-it before it reaches the user. For example, redacting a salary
-field.
+The **LLM route** sees the generated tool call before the tool is
+invoked. The **tool route** then decides whether that invocation is
+allowed. The example shows the intended target, but the phase in
+which its `args:` pipeline runs needs a decision (open question 6).
 
 Note: the order in the YAML file does not determine execution
 order. Each route fires at a different time based on its hook type.
@@ -270,12 +269,13 @@ the attribute bag:
 | `view.name` | `MessageView::name()` | `"get_compensation"` |
 | `view.action` | `ViewAction` | `"execute"`, `"generate"` |
 | `view.role` | `Role` | `"assistant"`, `"user"` |
-| `view.index` | Position in content list | `0`, `1`, `2` |
+| `view.index` | Position in content list (integer) | `0`, `1`, `2` |
 
 The bag mechanism already supports arbitrary keys and the predicate
-evaluator already handles dotted paths. Injecting view attributes
-requires no new config syntax — only a `with_view()` call on
-`BagBuilder`. The `match:` config block becomes syntactic sugar
+evaluator already handles dotted paths. The runtime clones the
+message-level bag and injects view attributes into that clone for
+each match iteration. `view.index` must be an integer so numeric
+predicates work. The `match:` config block becomes syntactic sugar
 over bag-based predicates.
 
 ### Write-back
@@ -314,10 +314,13 @@ bug this feature exists to fix.
 - `CompiledRoute` gains a `matches: Vec<MatchEntry>` field.
 - New `MatchEntry` struct with optional `kind`, `name`, `index`
   filters plus `args` / `result` field rules and `effects`.
+- Match `args` and `result` rules contribute to
+  `CompiledRoute::declared_phases()`; `visitor.rs` installs the
+  corresponding handlers even when a route has no route-level rules.
 - `AplRouteHandler::evaluate` gains a match loop after route-level
   evaluation.
-- `BagBuilder` gains a `with_view()` method for injecting view
-  attributes.
+- The CMF bridge gains a helper that clones the message-level bag
+  and injects view attributes for each match iteration.
 - `visitor.rs` parses `match:` from YAML config. The `match:` key
   must be extracted from the route block before calling
   `compile_policy_block_value`, which does not recognize it.
@@ -341,8 +344,8 @@ pub struct CompiledRoute {
 
 ```rust
 pub struct MatchEntry {
-    pub kind: Option<ViewKind>,
-    pub name: Option<StringOrGlob>,
+    pub kind: Option<ContentKind>,
+    pub name: Option<String>,
     pub index: Option<usize>,
     pub args: Vec<FieldRule>,
     pub result: Vec<FieldRule>,
@@ -351,22 +354,31 @@ pub struct MatchEntry {
 }
 ```
 
-`BagBuilder::with_view()`:
+`ContentKind` is an APL-owned enum with the same snake-case values
+as `ViewKind`. The runtime maps `MessageView::kind()` to it, keeping
+`ppe-apl-core` independent of `ppe-core`. The visitor validates
+`name` as an exact name or glob when loading config.
+
+The CMF bridge injects view attributes into a copy of the
+message-level bag:
 
 ```rust
-impl BagBuilder {
-    pub fn with_view(mut self, view: &MessageView, index: usize) -> Self {
-        self.bag.set("view.kind", view.kind().to_string());
-        if let Some(name) = view.name() {
-            self.bag.set("view.name", name);
-        }
-        self.bag.set("view.action", view.action().to_string());
-        self.bag.set("view.role", view.role().to_string());
-        self.bag.set("view.index", index.to_string());
-        self
+fn bag_with_view(base: &AttributeBag, view: &MessageView<'_>, index: i64) -> AttributeBag {
+    let mut bag = base.clone();
+    bag.set("view.kind", kind_name(view.kind()));
+    if let Some(name) = view.name() {
+        bag.set("view.name", name);
     }
+    bag.set("view.action", action_name(view.action()));
+    bag.set("view.role", role_name(view.role()));
+    bag.set("view.index", index);
+    bag
 }
 ```
+
+The name helpers emit the enums' snake-case config values. Convert
+the content position to `i64` with a checked conversion before
+building the bag; an out-of-range index fails closed.
 
 Match loop pseudocode (runs in both `evaluate_pre` and
 `evaluate_post`, processing args or result respectively):
@@ -376,9 +388,9 @@ for entry in route.matches:
     views = iter_views(message, hook, extensions)
     matched = filter(views, entry.matcher)
     for (index, view) in matched:
-        bag_with_view = bag.clone().with_view(view, index)
+        view_bag = bag_with_view(bag, view, checked_i64(index))
         value = extract_from_view(view, phase)  // args in pre, result in post
-        eval = run_field_pipeline(entry, value, bag_with_view, phase)
+        eval = run_field_pipeline(entry, value, view_bag, phase)
         taints.extend(eval.taints)              // merge into message-level accumulator
         write_back_to_view(message, index, value, phase)
         if eval.deny or eval.pending: halt      // taints survive even on halt
@@ -389,7 +401,7 @@ for entry in route.matches:
 | Scenario | Behavior |
 |----------|----------|
 | Existing route, no `match:` | Exactly the same as today. v0 projection, first-match. |
-| New route with `match:` only | Per-view dispatch for content operations. |
+| New route with `match:` only | Per-view dispatch for content operations; match rules install the needed phase handlers. |
 | New route with both `authorization:` and `match:` | Authorization runs first (route level), then match entries. |
 | `args:` / `result:` at route level alongside `match:` | Route-level pipelines use v0 projection. Match entries use per-view projection. Both can coexist. |
 
@@ -401,10 +413,13 @@ Unit tests:
 
 - `MatchEntry` filtering: kind-only, name-only, index-only, AND
   combinations, no-match.
+- Match-only routes install Pre and/or Post handlers for their
+  declared field pipelines.
 - Per-view projection: extract/write-back round-trips for each
   content-part variant.
 - Bag enrichment: verify `view.kind`, `view.name`, etc. are
-  present during match evaluation.
+  present during match evaluation, with `view.index` typed as an
+  integer.
 
 Integration tests:
 
@@ -413,7 +428,8 @@ Integration tests:
   first one, not an appended one).
 - Multi-part message: assistant turn with thinking + text + two
   tool calls.
-- `PromptResult` with several messages.
+- If nested prompt messages are in v1, a `PromptResult` with
+  several messages (open question 7).
 - Overlapping match entries both run in order.
 
 Backward compatibility tests:
@@ -429,13 +445,15 @@ Backward compatibility tests:
 | 1 | Should `match:` support `authorization:` / `deny` inside entries? | Yes, but a deny in a match entry denies the whole message. | Proposed |
 | 2 | Should taint inside a match entry scope to the part or the message? | Message — taints are message-level by design. | Proposed |
 | 3 | Should `match:` support `parallel:` blocks? | No for v1 — complexity without clear benefit. | Proposed |
-| 4 | Glob syntax for `name` — same as route selectors? | Yes, reuse `StringOrGlob` from the config parser. | Proposed |
+| 4 | Glob syntax for `name` — same as route selectors? | Yes, validate the pattern at load and use the same glob syntax. | Proposed |
 | 5 | Should `index` be 0-based or 1-based? | 0-based, matching Rust/JSON convention. | Proposed |
+| 6 | How does `args:` target a tool call produced in an LLM output? | Current phase split runs `args:` only in Pre; define output-phase behavior before implementing this example. | Open |
+| 7 | Does v1 address messages inside `PromptResult.messages`? | Decide scope; if included, define nested matching and write-back addresses. | Open |
 
 ### Suggested PR breakdown
 
 1. **PR 1 — Data structures**: `MatchEntry`, `CompiledRoute.matches`,
-   `ViewMatcher` logic, unit tests.
+   `declared_phases()`, `ViewMatcher` logic, unit tests.
 2. **PR 2 — Runtime**: per-view projection, match loop in
    `AplRouteHandler`, bag enrichment, `iter_views` gains production
    callers. Note: the proxy host adapter (praxis repo) must also
